@@ -17,6 +17,7 @@ import (
 var progname = filepath.Base(os.Args[0])
 
 func main() {
+
 	if len(os.Args) < 2 {
 		fmt.Fprintf(os.Stderr, "usage: %s dir1 [dir2 [dir3...]]\n", progname)
 		os.Exit(2)
@@ -31,12 +32,15 @@ func main() {
 
 func sizes(osDirname string) error {
 	sizes := newSizesStack()
-
+	var ignoreMask os.FileMode  =   os.ModeSymlink | os.ModeNamedPipe | os.ModeSocket | os.ModeDevice | os.ModeCharDevice | os.ModeIrregular
 	return godirwalk.Walk(osDirname, &godirwalk.Options{
 		FollowSymbolicLinks: false,
 		Callback: func(osPathname string, de *godirwalk.Dirent) error {
 			if de.IsDir() {
 				sizes.EnterDirectory()
+				st , _:= os.Stat(osPathname)
+				size := st.Size()
+				sizes.Accumulate(size)
 				return nil
 			}
 
@@ -45,16 +49,16 @@ func sizes(osDirname string) error {
 				return err
 			}
 
-
 			size := st.Size()
 			sizes.Accumulate(size)
 
-			if st.Mode()&os.ModeSymlink != 0 {
+			if st.Mode()&ignoreMask == 0 {
 				ofile, _ := os.Open(osPathname)
 				oattr, _ := xattr.GetAttr(ofile)
-				xattr.PrintFlags(uint32(oattr))
+				xattr.PrintFlags(int32(oattr))
 				defer ofile.Close()
 			}
+
 
 			_, err = fmt.Printf(" %s %12d %s\n", st.Mode(), size, osPathname)
 			return err
@@ -66,16 +70,19 @@ func sizes(osDirname string) error {
 		PostChildrenCallback: func(osPathname string, de *godirwalk.Dirent) error {
 			size := sizes.LeaveDirectory()
 			sizes.Accumulate(size) // add this directory's size to parent directory.
-
 			st, err := os.Stat(osPathname)
 
 			switch err {
 			case nil:
-				ofile, _ := os.Open(osPathname)
-				oattr, _ := xattr.GetAttr(ofile)
-				xattr.PrintFlags(uint32(oattr))
-				defer ofile.Close()
-				_, err = fmt.Printf(" %s %12d %s\n",st.Mode(), size, osPathname)
+
+				if st.Mode()&ignoreMask == 0 {
+					ofile, _ := os.Open(osPathname)
+					oattr, _ := xattr.GetAttr(ofile)
+					xattr.PrintFlags(int32(oattr))
+					defer ofile.Close()
+				}
+
+				_, err = fmt.Printf(" %s %12d %s\n", st.Mode(), size, osPathname)
 			default:
 				// ignore the error and just show the mode type
 				_, err = fmt.Printf("%s % 12d %s\n", de.ModeType(), size, osPathname)
@@ -89,12 +96,12 @@ func sizes(osDirname string) error {
 // but slightly modified LIFO semantics to push and pop on a regular stack.
 type sizesStack struct {
 	sizes []int64 // stack of sizes
-	top   uint64    // index of top of stack
+	top   int     // index of top of stack
 }
 
 func newSizesStack() *sizesStack {
 	// Initialize with dummy value at top of stack to eliminate special cases.
-	return &sizesStack{sizes: make([]int64, 1, 99999 )}
+	return &sizesStack{sizes: make([]int64, 1, 32)}
 }
 
 func (s *sizesStack) EnterDirectory() {
@@ -109,5 +116,6 @@ func (s *sizesStack) LeaveDirectory() (i int64) {
 }
 
 func (s *sizesStack) Accumulate(i int64) {
-		s.sizes[s.top] += i
+	s.sizes[s.top] += i
 }
+
